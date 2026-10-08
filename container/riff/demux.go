@@ -276,6 +276,12 @@ func (d *Demuxer) parse() error {
 				break
 			}
 			dataOff = off + 8
+			// Legacy WavPack keeps the source WAV header but compresses the
+			// data chunk. Refuse it before a truncated-size warning can hide
+			// the real reason, including in strict mode.
+			if err := d.rejectLegacyWavPack(dataOff, min(chunkSize, size-dataOff)); err != nil {
+				return err
+			}
 			switch {
 			case chunkSize == size32Unknown && haveDS64:
 				// ds64 sizes are 64-bit and file-supplied: bound against
@@ -404,6 +410,33 @@ func (d *Demuxer) parse() error {
 		SamplesExact:   exact,
 		SourceBitDepth: wf.sourceBits,
 		Default:        true,
+	}
+	return nil
+}
+
+// rejectLegacyWavPack recognizes the small legacy header at the start of
+// RIFF's data payload. The official 2.0 test suite's eight pre-4.0 files
+// establish this signature: "wvpk", a 2/4/28-byte header-size field, and a
+// 16-bit version 1/2/3. Do not classify PCM from the magic alone: PCM may
+// legitimately start with those four bytes.
+//
+// This is original recognition code based only on the corpus bytes and this
+// tree's RIFF parser; no decoder implementation or copyleft source was used.
+func (d *Demuxer) rejectLegacyWavPack(off, available int64) error {
+	if available < 10 {
+		return nil
+	}
+	var head [10]byte
+	if err := container.ReadFull(d.src, head[:], off); err != nil {
+		return container.ShortRead("wav: reading data signature", err)
+	}
+	if string(head[:4]) != "wvpk" {
+		return nil
+	}
+	size, version := le.Uint32(head[4:8]), le.Uint16(head[8:10])
+	if (version == 1 && size == 2) || (version == 2 && size == 4) || (version == 3 && size == 28) {
+		return waxerr.Unsupported("wavpack: ",
+			"unsupported stream version: only version-4 streams (0x402..0x410) are supported")
 	}
 	return nil
 }

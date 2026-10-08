@@ -85,11 +85,9 @@ var wavpackRefused = map[string]string{
 	"num_channels/multichannel-6.wv": "hybrid",
 }
 
-// wavpackLegacyWAV are the suite's pre-4.0 members. They are a different
-// bitstream and out of scope, and they never reach this decoder to be refused:
-// WavPack before 4.0 prepended the source WAV header, so the sniff table
-// resolves them as RIFF, exactly as the suite readme warns every WAV-based
-// player does. Pinning that keeps the split honest about where they land.
+// wavpackLegacyWAV are the suite's pre-4.0 members. They prepend the source
+// WAV header, but their data chunk contains compressed WavPack rather than PCM.
+// The RIFF driver must recognize and refuse them before any bytes are decoded.
 var wavpackLegacyWAV = []string{
 	"legacy/vers-10.wv",
 	"legacy/vers-20.wv",
@@ -282,23 +280,19 @@ func TestWavPackSuiteUnreadable(t *testing.T) {
 	}
 }
 
-// TestWavPackSuiteLegacyResolvesAsWAV pins where the pre-4.0 members land: the
-// wav driver, because they carry the original WAV header. They are out of
-// scope either way, but the reason matters, since it is why they never appear
-// in the refusal table.
-func TestWavPackSuiteLegacyResolvesAsWAV(t *testing.T) {
+// TestWavPackSuiteLegacyRefused pins the engine-level refusal: RIFF matching
+// must not turn a legacy WavPack file into purported PCM.
+func TestWavPackSuiteLegacyRefused(t *testing.T) {
 	for _, name := range wavpackLegacyWAV {
 		t.Run(name, func(t *testing.T) {
 			raw := suiteFile(t, name)
-			info, err := waxflow.New().Probe(container.BytesSource(raw), "wv", nil)
-			if err != nil {
-				t.Skipf("pre-4.0 sample does not probe at all: %v", err)
+			_, err := waxflow.New().Probe(container.BytesSource(raw), "wv", nil)
+			if waxerr.CodeOf(err) != waxerr.CodeUnsupportedFormat {
+				t.Fatalf("error = %v, want unsupported format", err)
 			}
-			if info.Container == "wavpack" {
-				t.Fatalf("a pre-4.0 stream resolved to the wavpack driver, which cannot decode it")
-			}
-			if info.Container != "wav" {
-				t.Errorf("container = %q, want wav (the prepended source header)", info.Container)
+			const want = "wavpack: unsupported stream version: only version-4 streams (0x402..0x410) are supported"
+			if err.Error() != want {
+				t.Fatalf("error = %q, want %q", err, want)
 			}
 		})
 	}
